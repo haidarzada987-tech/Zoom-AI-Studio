@@ -12,6 +12,9 @@ android {
         targetSdk = 35
         versionCode = 3
         versionName = "0.2.1"
+        // Test builds target modern 64-bit phones only — keeps the APK much smaller
+        // (ML Kit ships a ~20 MB native library per CPU architecture).
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
     buildTypes {
         release { isMinifyEnabled = false }
