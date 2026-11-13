@@ -46,6 +46,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
@@ -61,7 +62,7 @@ import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseDetector
-import com.google.mlkit.vision.pose.PoseDetectorOptions
+import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -556,7 +557,7 @@ class MainActivity : AppCompatActivity() {
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                 runOnUiThread { toast(s("عکس در گالری گوشی ذخیره شد", "Photo saved to your gallery")) }
             }
-            override fun onError(exc: ImageCapture.ImageCaptureException) {
+            override fun onError(exc: ImageCaptureException) {
                 runOnUiThread { toast(s("خطا هنگام عکس‌برداری", "Capture error") + ": ${exc.localizedMessage}") }
             }
         })
