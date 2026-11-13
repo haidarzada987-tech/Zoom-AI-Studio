@@ -56,7 +56,7 @@ class PoseOverlayView(context: Context) : View(context) {
     }
 
     private val guide = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(215, 87, 219, 176)
+        color = Color.argb(215, 76, 195, 255)
         strokeWidth = 5f
         strokeCap = Paint.Cap.ROUND
         style = Paint.Style.STROKE
@@ -86,7 +86,7 @@ class PoseOverlayView(context: Context) : View(context) {
         style = Paint.Style.STROKE
     }
     private val levelOkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(230, 87, 219, 176)
+        color = Color.argb(230, 76, 195, 255)
         strokeWidth = 3f
         style = Paint.Style.STROKE
     }

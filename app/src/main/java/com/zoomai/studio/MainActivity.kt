@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -66,7 +67,6 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseDetector
 import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
-import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -75,19 +75,31 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Zoom AI Studio — v0.3 design: a calm, Samsung-style camera screen
- * (full-screen preview, quiet line icons, mode words, one big shutter),
- * a photo-based pose library, a list-style settings page and a separate
- * About page that holds all developer info.
+ * Zoom AI Studio — v0.4.0, Phase 1 UI rebuild.
+ *
+ * One activity, four tabs, organized in sections:
+ *  - Camera: full-screen preview, ONE quiet quick-toggle row (flash/timer/grid/
+ *    ratio) + a gear + a "more tools" sheet; zoom chips from the device's real
+ *    range; mode words (Pro/Photo/Video); one big shutter deck.
+ *  - Poses: real-photo library (assets/poses manifest) → full detail page with
+ *    a tip and a single «استفاده در عکس» button that applies the camera ghost.
+ *  - Editor: Samsung Gallery-editor pattern — calm empty state, a bottom tool
+ *    bar, and per-tool panels with ✓/✕; effects are live thumbnails rendered
+ *    from the actual photo; sliders live only inside Adjust (+ intensity in
+ *    Effects). Saving always writes a new file.
+ *  - Settings / About: calm list pages; all developer info lives in About.
+ *
+ * Palette (spec): bg #0B0E13, surface #151A21, surface-2 #1E2631,
+ * ink #F2F5F8, muted #9AA7B4, accent #4CC3FF. No mint anywhere.
  */
 class MainActivity : AppCompatActivity() {
-    private val bg = Color.rgb(5, 7, 11)
-    private val panel = Color.rgb(13, 17, 24)
-    private val card = Color.rgb(22, 28, 38)
-    private val accent = Color.rgb(94, 169, 255)
-    private val camAccent = Color.rgb(255, 204, 0)
+    private val bg = Color.rgb(11, 14, 19)        // #0B0E13
+    private val panel = Color.rgb(21, 26, 33)     // #151A21 surface
+    private val card = Color.rgb(30, 38, 49)      // #1E2631 surface-2
+    private val ink = Color.rgb(242, 245, 248)    // #F2F5F8
+    private val accent = Color.rgb(76, 195, 255)  // #4CC3FF
     private val danger = Color.rgb(255, 82, 82)
-    private val muted = Color.rgb(154, 167, 184)
+    private val muted = Color.rgb(154, 167, 180)  // #9AA7B4
     private val faint = Color.rgb(106, 118, 135)
 
     private fun s(fa: String, en: String) = I18n.s(fa, en)
@@ -99,7 +111,7 @@ class MainActivity : AppCompatActivity() {
     private val navIcons = mutableListOf<ImageView>()
     private val navLabels = mutableListOf<TextView>()
 
-    // Camera state
+    // ------------------------------------------------------------------ camera state
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
     private var capture: ImageCapture? = null
@@ -134,19 +146,21 @@ class MainActivity : AppCompatActivity() {
     private var btnFlash: IconBtn? = null
     private var btnTimer: IconBtn? = null
     private var btnGrid: IconBtn? = null
-    private var btnTorch: IconBtn? = null
-    private var btnPose: IconBtn? = null
-    private var btnLive: IconBtn? = null
-    private var btnLevel: IconBtn? = null
+    private var btnMore: IconBtn? = null
     private var ratioLabel: TextView? = null
-    private var modeLabels = mutableListOf<TextView>()
+    private var modeCells = mutableListOf<Triple<Int, TextView, View>>()
     private var zoomChipRow: LinearLayout? = null
     private var zoomChips = mutableListOf<Pair<Float, TextView>>()
     private var proPanel: LinearLayout? = null
     private var evSeekBar: SeekBar? = null
     private var zoomSeek: SeekBar? = null
-    private var poseStrip: View? = null
     private var shutterInner: View? = null
+    private var toolSheet: LinearLayout? = null
+    private var sheetOpen = false
+    private inner class Tile(val box: LinearLayout, val img: ImageView, val label: TextView)
+    private val sheetTiles = mutableMapOf<String, Tile>()
+    private var poseChip: LinearLayout? = null
+    private var poseChipLabel: TextView? = null
 
     // ML Kit pose detection
     private var poseDetector: PoseDetector? = null
@@ -156,22 +170,36 @@ class MainActivity : AppCompatActivity() {
     private var sensorManager: SensorManager? = null
     private var tiltListener: SensorEventListener? = null
 
-    // Editor state
-    private var editorBitmap: Bitmap? = null
+    // ------------------------------------------------------------------ editor state
+    private var edBase: Bitmap? = null          // committed working bitmap (geometry applied)
+    private var edPendingBmp: Bitmap? = null    // geometry session preview (Crop/Rotate/Flip)
     private var editorImage: ImageView? = null
+    private var editorPanelBox: LinearLayout? = null
+    private var editorSaveBtn: TextView? = null
+    private var edTool = 0                      // 0 none · 1 crop · 2 rotate · 3 flip · 4 adjust · 5 effects
+    private val toolCells = mutableListOf<Triple<Int, ImageView, TextView>>()
+    private val fxCells = mutableListOf<Pair<EffectPreset, FrameLayout>>()
+    private val cropChips = mutableListOf<Pair<String, TextView>>()
+    private var cropRatioSel = "free"
+    // Committed filter state (what Save uses)
     private var editorPreset: EffectPreset = Effects.default
     private var fxIntensity = 1f
     private var fxBrightness = 0f
     private var fxContrast = 1f
     private var fxSaturation = 1f
     private var fxWarmth = 0f
+    // Pending filter state while the Adjust/Effects panel is open
+    private var pendPreset: EffectPreset = Effects.default
+    private var pendIntensity = 1f
+    private var pendBrightness = 0f
+    private var pendContrast = 1f
+    private var pendSaturation = 1f
+    private var pendWarmth = 0f
 
-    // Pose photo library (real photos bundled in assets/poses)
-    private data class PosePhoto(val file: String, val fa: String, val en: String, val category: String) {
-        fun title(): String = I18n.s(fa, en)
-    }
+    // ------------------------------------------------------------------ pose library state
     private var posePhotos: List<PosePhoto>? = null
     private var poseFilter = "all"
+    private var poseDetail: PosePhoto? = null
 
     private val prefs by lazy { getSharedPreferences("zoomai", Context.MODE_PRIVATE) }
 
@@ -185,7 +213,9 @@ class MainActivity : AppCompatActivity() {
     }
     private val imagePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
-            editorBitmap = decodeResized(uri)
+            edBase = decodeResized(uri)
+            edPendingBmp = null
+            edTool = 0
             resetEffects()
             navigate(2)
         }
@@ -208,6 +238,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(root)
         navigate(0)
     }
+
+    // ------------------------------------------------------------------ navigation
 
     private fun navigation(): View {
         val bar = LinearLayout(this).apply {
@@ -243,8 +275,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshNav() {
-        navIcons.forEachIndexed { i, img -> img.setColorFilter(if (i == currentTab) Color.WHITE else faint) }
-        navLabels.forEachIndexed { i, lab -> lab.setTextColor(if (i == currentTab) Color.WHITE else faint) }
+        navIcons.forEachIndexed { i, img -> img.setColorFilter(if (i == currentTab) accent else muted) }
+        navLabels.forEachIndexed { i, lab -> lab.setTextColor(if (i == currentTab) accent else muted) }
     }
 
     private fun navigate(tab: Int) {
@@ -265,7 +297,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ------------------------------------------------------------------ camera screen
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        when {
+            inAbout -> { inAbout = false; showSettings() }
+            currentTab == 1 && poseDetail != null -> { poseDetail = null; showPoses() }
+            currentTab == 2 && edTool != 0 -> closePanel(commit = false)
+            else -> super.onBackPressed()
+        }
+    }
+
+    // ------------------------------------------------------------------ shared widget styling
+
+    /** Spec SeekBar style: white progress on a dark track, accent thumb. Never the old theme color. */
+    private fun styleSeek(seek: SeekBar) {
+        seek.progressTintList = ColorStateList.valueOf(ink)
+        seek.progressBackgroundTintList = ColorStateList.valueOf(card)
+        seek.thumbTintList = ColorStateList.valueOf(accent)
+    }
+
+    private fun styleSwitch(sw: Switch) {
+        sw.thumbTintList = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(accent, ink)
+        )
+        sw.trackTintList = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(Color.argb(120, 76, 195, 255), card)
+        )
+    }
 
     private fun iconBtn(iconRes: Int, onClick: () -> Unit): IconBtn {
         val box = FrameLayout(this).apply {
@@ -282,7 +342,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(img, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
         val badge = TextView(this).apply {
             textSize = 9f
-            setTextColor(camAccent)
+            setTextColor(accent)
             typeface = Typeface.DEFAULT_BOLD
             visibility = View.GONE
         }
@@ -292,11 +352,14 @@ class MainActivity : AppCompatActivity() {
         return IconBtn(box, img, badge)
     }
 
+    // ================================================================== CAMERA
+
     private fun showCamera() {
         content.removeAllViews()
-        btnFlash = null; btnTimer = null; btnGrid = null; btnTorch = null
-        btnPose = null; btnLive = null; btnLevel = null
-        modeLabels = mutableListOf(); zoomChips = mutableListOf()
+        btnFlash = null; btnTimer = null; btnGrid = null; btnMore = null
+        modeCells = mutableListOf(); zoomChips = mutableListOf()
+        sheetTiles.clear(); toolSheet = null; sheetOpen = false
+        poseChip = null; poseChipLabel = null
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             val prompt = vertical().apply { gravity = Gravity.CENTER; setPadding(dp(28), 0, dp(28), 0) }
             prompt.addView(title(s("دوربین Zoom AI Studio", "Zoom AI Studio Camera")))
@@ -344,12 +407,12 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
-        // Top bar: two quiet rows of line icons, like a real camera app.
+        // Top area: gear alone on one side; ONE quick-toggle row on the other.
         val top = vertical().apply { setPadding(dp(10), dp(10), dp(10), 0) }
-        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val gear = iconBtn(R.drawable.ic_tune) { navigate(3) }
-        row1.addView(gear.box, LinearLayout.LayoutParams(dp(44), dp(44)))
-        row1.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val gear = iconBtn(R.drawable.ic_gear) { navigate(3) }
+        topRow.addView(gear.box, LinearLayout.LayoutParams(dp(42), dp(42)))
+        topRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         btnFlash = iconBtn(R.drawable.ic_flash) {
             if (videoMode) toggleTorch() else {
                 flashMode = when (flashMode) {
@@ -361,18 +424,18 @@ class MainActivity : AppCompatActivity() {
                 refreshCameraUi()
             }
         }
-        row1.addView(btnFlash!!.box, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
+        topRow.addView(btnFlash!!.box, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginStart = dp(6) })
         btnTimer = iconBtn(R.drawable.ic_timer) {
             timerSec = when (timerSec) { 0 -> 3; 3 -> 10; else -> 0 }
             refreshCameraUi()
         }
-        row1.addView(btnTimer!!.box, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
+        topRow.addView(btnTimer!!.box, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginStart = dp(6) })
         btnGrid = iconBtn(R.drawable.ic_grid) {
             showGrid = !showGrid
             overlay.showFrame = showGrid
             refreshCameraUi()
         }
-        row1.addView(btnGrid!!.box, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
+        topRow.addView(btnGrid!!.box, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginStart = dp(6) })
         ratioLabel = TextView(this).apply {
             text = "4:3"
             textSize = 12f
@@ -380,7 +443,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
                 setColor(Color.argb(92, 0, 0, 0))
-                cornerRadius = dp(22).toFloat()
+                cornerRadius = dp(21).toFloat()
             }
             setOnClickListener {
                 aspectRatio = if (aspectRatio == AspectRatio.RATIO_4_3) AspectRatio.RATIO_16_9 else AspectRatio.RATIO_4_3
@@ -388,37 +451,54 @@ class MainActivity : AppCompatActivity() {
                 refreshCameraUi()
             }
         }
-        row1.addView(ratioLabel, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
-        btnTorch = iconBtn(R.drawable.ic_torch) { toggleTorch() }
-        row1.addView(btnTorch!!.box, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
-        top.addView(row1)
-        val row2 = LinearLayout(this).apply {
+        topRow.addView(ratioLabel, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginStart = dp(6) })
+        btnMore = iconBtn(R.drawable.ic_tune) {
+            sheetOpen = !sheetOpen
+            toolSheet?.visibility = if (sheetOpen) View.VISIBLE else View.GONE
+            refreshCameraUi()
+        }
+        topRow.addView(btnMore!!.box, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginStart = dp(6) })
+        top.addView(topRow)
+
+        // Pose-name chip: top-center, only while a pose ghost is applied.
+        val chipRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
+            gravity = Gravity.CENTER
             setPadding(0, dp(8), 0, 0)
         }
-        btnPose = iconBtn(R.drawable.ic_pose) {
-            poseStrip?.visibility = if (poseStrip?.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-            refreshCameraUi()
+        val chip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.argb(150, 11, 14, 19))
+                cornerRadius = dp(16).toFloat()
+            }
+            setPadding(dp(12), dp(5), dp(6), dp(5))
         }
-        row2.addView(btnPose!!.box, LinearLayout.LayoutParams(dp(44), dp(44)))
-        btnLive = iconBtn(R.drawable.ic_live) {
-            livePoseOn = !livePoseOn
-            if (!livePoseOn) overlay.setLive(null, 0, 0, 0, false)
-            bindCamera(preview)
-            refreshCameraUi()
+        val chipLabel = TextView(this).apply {
+            textSize = 12.5f
+            setTextColor(ink)
         }
-        row2.addView(btnLive!!.box, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
-        btnLevel = iconBtn(R.drawable.ic_level) {
-            levelOn = !levelOn
-            if (levelOn) startTiltSensor(overlay) else { stopTiltSensor(); overlay.levelDegrees = null }
-            refreshCameraUi()
+        poseChipLabel = chipLabel
+        chip.addView(chipLabel, LinearLayout.LayoutParams(-2, -2))
+        val chipClose = ImageView(this).apply {
+            setImageResource(R.drawable.ic_close)
+            setColorFilter(Color.WHITE)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            setOnClickListener {
+                ghostPoseFile = null
+                ghostPoseTitle = null
+                applyGhost()
+                refreshCameraUi()
+            }
         }
-        row2.addView(btnLevel!!.box, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(6) })
-        top.addView(row2)
+        chip.addView(chipClose, LinearLayout.LayoutParams(dp(26), dp(26)))
+        chipRow.addView(chip, LinearLayout.LayoutParams(-2, -2))
+        poseChip = chipRow
+        top.addView(chipRow)
         content.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
-        // Bottom stack: status, zoom pill, pose strip, pro panel, modes, shutter deck.
+        // Bottom stack: status, zoom chips, pro panel, tool sheet, shutter deck.
         val bottomStack = vertical().apply { gravity = Gravity.CENTER_HORIZONTAL }
         val status = TextView(this).apply {
             gravity = Gravity.CENTER
@@ -435,32 +515,43 @@ class MainActivity : AppCompatActivity() {
             addView(zoomChipRow)
         }
         bottomStack.addView(zoomScroll, LinearLayout.LayoutParams(-2, dp(40)))
-        poseStrip = buildPoseStrip()
-        bottomStack.addView(poseStrip, LinearLayout.LayoutParams(-1, dp(86)))
         proPanel = buildProPanel()
         bottomStack.addView(proPanel, LinearLayout.LayoutParams(-1, -2))
-        val deck = vertical().apply { setBackgroundColor(Color.argb(232, 0, 0, 0)) }
+        toolSheet = buildToolSheet(overlay)
+        bottomStack.addView(toolSheet, LinearLayout.LayoutParams(-1, -2))
+        val deck = vertical().apply { setBackgroundColor(Color.argb(228, 11, 14, 19)) }
         val modeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(0, dp(10), 0, dp(2))
         }
         val modes = listOf(
-            2 to s("حرفه‌ای", "Pro"),
+            2 to s("پرو", "Pro"),
             0 to s("عکس", "Photo"),
             1 to s("ویدیو", "Video")
         )
         for ((mode, labelText) in modes) {
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(16), dp(2), dp(16), dp(2))
+                setOnClickListener { setMode(mode, preview) }
+            }
             val tv = TextView(this).apply {
                 text = labelText
                 textSize = 15f
                 gravity = Gravity.CENTER
-                setPadding(dp(16), dp(6), dp(16), dp(6))
-                tag = mode
-                setOnClickListener { setMode(mode, preview) }
             }
-            modeLabels.add(tv)
-            modeRow.addView(tv, LinearLayout.LayoutParams(-2, -2))
+            val dot = View(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(accent)
+                }
+            }
+            cell.addView(tv, LinearLayout.LayoutParams(-2, -2))
+            cell.addView(dot, LinearLayout.LayoutParams(dp(5), dp(5)).apply { topMargin = dp(3) })
+            modeCells.add(Triple(mode, tv, dot))
+            modeRow.addView(cell, LinearLayout.LayoutParams(-2, -2))
         }
         deck.addView(modeRow)
         val shutterRow = LinearLayout(this).apply {
@@ -510,13 +601,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildProPanel(): LinearLayout {
         val p = vertical().apply {
-            setBackgroundColor(Color.argb(168, 8, 10, 14))
+            setBackgroundColor(Color.argb(205, 21, 26, 33))
             setPadding(dp(20), dp(8), dp(20), dp(8))
             visibility = View.GONE
         }
         val evRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         evRow.addView(TextView(this).apply { text = "EV"; setTextColor(muted); textSize = 12f }, LinearLayout.LayoutParams(dp(44), -2))
         val evSeek = SeekBar(this)
+        styleSeek(evSeek)
         evSeekBar = evSeek
         evSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -535,6 +627,7 @@ class MainActivity : AppCompatActivity() {
         val zRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         zRow.addView(TextView(this).apply { text = s("زوم", "Zoom"); setTextColor(muted); textSize = 12f }, LinearLayout.LayoutParams(dp(44), -2))
         val zSeek = SeekBar(this).apply { max = 100 }
+        styleSeek(zSeek)
         zoomSeek = zSeek
         zSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -550,54 +643,118 @@ class MainActivity : AppCompatActivity() {
         return p
     }
 
-    private fun buildPoseStrip(): View {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val clear = TextView(this).apply {
-            text = s("بدون ژست", "No pose")
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(dp(10), 0, dp(10), 0)
-            background = GradientDrawable().apply { setColor(Color.argb(120, 16, 20, 27)); cornerRadius = dp(10).toFloat() }
+    /** Bottom tool sheet: the secondary toggles live here, not on the preview. */
+    private fun buildToolSheet(overlay: PoseOverlayView): LinearLayout {
+        val sheet = vertical().apply {
+            background = GradientDrawable().apply {
+                setColor(panel)
+                cornerRadii = floatArrayOf(dp(20).toFloat(), dp(20).toFloat(), dp(20).toFloat(), dp(20).toFloat(), 0f, 0f, 0f, 0f)
+            }
+            setPadding(dp(16), dp(10), dp(16), dp(14))
+            visibility = View.GONE
+        }
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(TextView(this).apply {
+            text = s("ابزارها", "Tools")
+            textSize = 14f
+            setTextColor(ink)
+            typeface = Typeface.DEFAULT_BOLD
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        val closeBtn = ImageView(this).apply {
+            setImageResource(R.drawable.ic_close)
+            setColorFilter(muted)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             setOnClickListener {
-                ghostPoseFile = null
-                ghostPoseTitle = null
-                applyGhost()
+                sheetOpen = false
+                toolSheet?.visibility = View.GONE
                 refreshCameraUi()
             }
         }
-        row.addView(clear, LinearLayout.LayoutParams(dp(64), dp(64)))
-        for (photo in loadPosePhotos()) {
-            val thumb = ImageView(this).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                setOnClickListener {
-                    ghostPoseFile = photo.file
-                    ghostPoseTitle = photo.title()
-                    applyGhost()
-                    refreshCameraUi()
-                }
+        head.addView(closeBtn, LinearLayout.LayoutParams(dp(30), dp(30)))
+        sheet.addView(head)
+
+        fun tile(key: String, iconRes: Int, labelText: String, onClick: () -> Unit): LinearLayout {
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(4), dp(10), dp(4), dp(10))
+                setOnClickListener { onClick() }
             }
-            decodeAssetInto(thumb, photo.file, 6)
-            row.addView(thumb, LinearLayout.LayoutParams(dp(50), dp(64)).apply { marginStart = dp(8) })
+            val img = ImageView(this).apply { setImageResource(iconRes) }
+            val lab = TextView(this).apply {
+                text = labelText
+                textSize = 11.5f
+                gravity = Gravity.CENTER
+            }
+            box.addView(img, LinearLayout.LayoutParams(dp(24), dp(24)))
+            box.addView(lab, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(5) })
+            sheetTiles[key] = Tile(box, img, lab)
+            return box
         }
-        val all = TextView(this).apply {
-            text = s("همه ژست‌ها", "All poses")
-            textSize = 12f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(dp(10), 0, dp(10), 0)
-            background = GradientDrawable().apply { setColor(Color.argb(120, 16, 20, 27)); cornerRadius = dp(10).toFloat() }
+        val tiles = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        tiles.addView(tile("grid", R.drawable.ic_grid, s("شبکه", "Grid")) {
+            showGrid = !showGrid
+            overlay.showFrame = showGrid
+            refreshCameraUi()
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(4) })
+        tiles.addView(tile("level", R.drawable.ic_level, s("تراز", "Level")) {
+            levelOn = !levelOn
+            if (levelOn) startTiltSensor(overlay) else { stopTiltSensor(); overlay.levelDegrees = null }
+            refreshCameraUi()
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        tiles.addView(tile("torch", R.drawable.ic_torch, s("چراغ", "Torch")) {
+            toggleTorch()
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4); marginEnd = dp(4) })
+        tiles.addView(tile("live", R.drawable.ic_live, s("ژست زنده", "Live pose")) {
+            livePoseOn = !livePoseOn
+            if (!livePoseOn) overlay.setLive(null, 0, 0, 0, false)
+            // Rebind so the analysis use-case is added/removed.
+            val pv = content.getChildAt(0) as? PreviewView
+            if (pv != null) bindCamera(pv)
+            refreshCameraUi()
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(4) })
+        sheet.addView(tiles)
+
+        val libraryRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply { setColor(card); cornerRadius = dp(14).toFloat() }
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             setOnClickListener { navigate(1) }
         }
-        row.addView(all, LinearLayout.LayoutParams(dp(64), dp(64)).apply { marginStart = dp(8) })
-        val scroll = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            setBackgroundColor(Color.argb(150, 8, 10, 14))
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            addView(row)
-            visibility = View.GONE
+        val libImg = ImageView(this).apply { setImageResource(R.drawable.ic_pose); setColorFilter(Color.WHITE) }
+        libraryRow.addView(libImg, LinearLayout.LayoutParams(dp(22), dp(22)))
+        libraryRow.addView(TextView(this).apply {
+            text = s("کتابخانه ژست‌ها", "Pose library")
+            textSize = 14f
+            setTextColor(ink)
+            setPadding(dp(10), 0, dp(10), 0)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        libraryRow.addView(TextView(this).apply { text = "›"; textSize = 20f; setTextColor(faint) })
+        sheet.addView(libraryRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        return sheet
+    }
+
+    private fun refreshSheet() {
+        val states = mapOf(
+            "grid" to showGrid,
+            "level" to levelOn,
+            "torch" to torchOn,
+            "live" to livePoseOn
+        )
+        for ((key, tile) in sheetTiles) {
+            val on = states[key] == true
+            tile.box.background = GradientDrawable().apply {
+                setColor(if (on) Color.argb(46, 76, 195, 255) else card)
+                cornerRadius = dp(14).toFloat()
+                if (on) setStroke(dp(1), accent)
+            }
+            tile.img.setColorFilter(if (on) accent else Color.WHITE)
+            tile.label.setTextColor(if (on) accent else ink)
         }
-        return scroll
     }
 
     private fun setMode(mode: Int, preview: PreviewView) {
@@ -610,7 +767,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshCameraUi() {
         fun tint(btn: IconBtn?, active: Boolean) {
-            btn?.img?.setColorFilter(if (active) camAccent else Color.WHITE)
+            btn?.img?.setColorFilter(if (active) accent else Color.WHITE)
         }
         tint(btnFlash, flashMode != ImageCapture.FLASH_MODE_OFF)
         btnFlash?.badge?.let {
@@ -623,16 +780,14 @@ class MainActivity : AppCompatActivity() {
             it.visibility = if (timerSec > 0) View.VISIBLE else View.GONE
         }
         tint(btnGrid, showGrid)
-        tint(btnTorch, torchOn)
-        tint(btnPose, ghostPoseFile != null || poseStrip?.visibility == View.VISIBLE)
-        tint(btnLive, livePoseOn)
-        tint(btnLevel, levelOn)
+        tint(btnMore, sheetOpen)
         ratioLabel?.text = if (aspectRatio == AspectRatio.RATIO_4_3) "4:3" else "16:9"
         val currentMode = when { videoMode -> 1; proMode -> 2; else -> 0 }
-        for (tv in modeLabels) {
-            val selected = (tv.tag as? Int) == currentMode
-            tv.setTextColor(if (selected) Color.WHITE else faint)
+        for ((mode, tv, dot) in modeCells) {
+            val selected = mode == currentMode
+            tv.setTextColor(if (selected) Color.WHITE else muted)
             tv.typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            dot.visibility = if (selected) View.VISIBLE else View.INVISIBLE
         }
         proPanel?.visibility = if (proMode) View.VISIBLE else View.GONE
         shutterInner?.background = GradientDrawable().apply {
@@ -643,7 +798,10 @@ class MainActivity : AppCompatActivity() {
                 else -> Color.WHITE
             })
         }
-        if (!isRecording && !countingDown) statusLabel?.text = ghostPoseTitle ?: ""
+        poseChip?.visibility = if (ghostPoseFile != null) View.VISIBLE else View.GONE
+        poseChipLabel?.text = ghostPoseTitle ?: ""
+        if (!isRecording && !countingDown) statusLabel?.text = ""
+        refreshSheet()
     }
 
     private fun fmtZoom(r: Float): String {
@@ -679,9 +837,9 @@ class MainActivity : AppCompatActivity() {
         val nearest = zoomChips.minByOrNull { kotlin.math.abs(it.first - current) }?.first
         for ((ratio, tv) in zoomChips) {
             val selected = ratio == nearest
-            tv.setTextColor(if (selected) Color.BLACK else Color.WHITE)
+            tv.setTextColor(if (selected) bg else Color.WHITE)
             tv.background = GradientDrawable().apply {
-                setColor(if (selected) Color.WHITE else Color.argb(115, 14, 18, 24))
+                setColor(if (selected) accent else Color.argb(115, 21, 26, 33))
                 cornerRadius = dp(13).toFloat()
             }
         }
@@ -858,7 +1016,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 override fun onFinish() {
                     countingDown = false
-                    statusLabel?.text = ghostPoseTitle ?: ""
+                    statusLabel?.text = ""
                     takePhoto()
                 }
             }.start()
@@ -919,7 +1077,7 @@ class MainActivity : AppCompatActivity() {
                     isRecording = false
                     activeRecording = null
                     mainHandler.removeCallbacks(recordTicker)
-                    statusLabel?.text = ghostPoseTitle ?: ""
+                    statusLabel?.text = ""
                     statusLabel?.setTextColor(Color.WHITE)
                     refreshCameraUi()
                     if (event.hasError()) toast(s("خطا در ضبط ویدیو", "Video recording error"))
@@ -943,28 +1101,11 @@ class MainActivity : AppCompatActivity() {
         activeRecording?.stop()
     }
 
-    // ------------------------------------------------------------------ pose photo library
+    // ================================================================== POSES
 
     private fun loadPosePhotos(): List<PosePhoto> {
         posePhotos?.let { return it }
-        val list = mutableListOf<PosePhoto>()
-        try {
-            val text = assets.open("poses/manifest.json").bufferedReader().use { it.readText() }
-            val arr = JSONArray(text)
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                list.add(
-                    PosePhoto(
-                        file = o.getString("file"),
-                        fa = o.optString("title_fa"),
-                        en = o.optString("title_en"),
-                        category = o.optString("category")
-                    )
-                )
-            }
-        } catch (e: Exception) {
-            // Library stays empty if the manifest is missing; the camera still works.
-        }
+        val list = PoseLibrary.load(this)
         posePhotos = list
         return list
     }
@@ -974,11 +1115,6 @@ class MainActivity : AppCompatActivity() {
         assets.open("poses/$file").use { BitmapFactory.decodeStream(it, null, opts) }
     } catch (e: Exception) {
         null
-    }
-
-    private fun decodeAssetInto(img: ImageView, file: String, sample: Int) {
-        val bmp = decodeAsset(file, sample) ?: return
-        img.setImageBitmap(bmp)
     }
 
     private fun applyGhost() {
@@ -997,21 +1133,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPoses() {
+        poseDetail?.let { showPoseDetail(it); return }
         content.removeAllViews()
         val scroll = ScrollView(this)
         val layout = vertical().apply { setPadding(dp(16), dp(16), dp(16), dp(16)) }
         layout.addView(title(s("ژست‌ها", "Poses")))
-        layout.addView(note(s("عکس واقعی هر ژست است. روی یک عکس بزن تا مثل سایه روی دوربین بیاید و همان ژست را بگیری.",
-            "Each pose is a real photo. Tap one and it appears as a ghost over the camera so you can match it.")))
-        val categories = listOf(
-            Triple("all", "همه", "All"),
-            Triple("women", "زنانه", "Women"),
-            Triple("men", "مردانه", "Men"),
-            Triple("couple", "دو نفره", "Couples"),
-            Triple("family", "خانواده", "Family"),
-            Triple("kids", "کودکان", "Kids"),
-            Triple("friends", "دوستان", "Friends")
-        )
+        layout.addView(note(s("عکس واقعی هر ژست است. روی یک عکس بزن تا کامل ببینیش؛ با دکمهٔ «استفاده در عکس» مثل سایه روی دوربین می‌آید.",
+            "Each pose is a real photo. Tap one to see it full-size; the \"Use in photo\" button puts it on the camera as a ghost.")))
+        val categories = listOf(Triple("all", "همه", "All")) + PoseLibrary.categoryLabels
         val chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for ((key, fa, en) in categories) {
             val selected = poseFilter == key
@@ -1020,9 +1149,9 @@ class MainActivity : AppCompatActivity() {
                 textSize = 13f
                 gravity = Gravity.CENTER
                 setPadding(dp(14), dp(7), dp(14), dp(7))
-                setTextColor(if (selected) Color.BLACK else Color.WHITE)
+                setTextColor(if (selected) bg else ink)
                 background = GradientDrawable().apply {
-                    setColor(if (selected) Color.WHITE else card)
+                    setColor(if (selected) accent else card)
                     cornerRadius = dp(16).toFloat()
                 }
                 setOnClickListener { poseFilter = key; showPoses() }
@@ -1050,10 +1179,8 @@ class MainActivity : AppCompatActivity() {
                         if (isSelected) setStroke(dp(2), accent)
                     }
                     setOnClickListener {
-                        ghostPoseFile = photo.file
-                        ghostPoseTitle = photo.title()
-                        navigate(0)
-                        toast(s("ژست روی دوربین آمد", "Pose is on the camera"))
+                        poseDetail = photo
+                        showPoses()
                     }
                 }
                 val img = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
@@ -1069,7 +1196,7 @@ class MainActivity : AppCompatActivity() {
                     text = photo.title()
                     textSize = 12f
                     gravity = Gravity.CENTER
-                    setTextColor(if (isSelected) accent else Color.WHITE)
+                    setTextColor(if (isSelected) accent else ink)
                     setPadding(dp(4), dp(7), dp(4), 0)
                 }, LinearLayout.LayoutParams(-1, -2))
                 rowLayout.addView(cardBox, LinearLayout.LayoutParams(0, -2, 1f).apply {
@@ -1081,14 +1208,74 @@ class MainActivity : AppCompatActivity() {
             })
             layout.addView(rowLayout)
         }
-        layout.addView(note(s("مجموعهٔ آغازین: ۱۸ عکس واقعی با مجوز آزاد (Pexels). عکس‌های بیشتر بعداً از اینترنت گرفته و روی گوشی ذخیره می‌شوند.",
-            "Starter set: 18 real photos, free license (Pexels). More will be downloaded and cached on the phone later.")),
+        layout.addView(note(s("مجموعهٔ فعلی: ۱۲ عکس واقعی با مجوز آزاد (Pexels) — هر ژست یک نکتهٔ کوتاه هم دارد. مجموعهٔ کامل‌تر در مرحلهٔ بعد می‌آید.",
+            "Current set: 12 real photos, free license (Pexels) — every pose also has a short tip. The fuller library arrives in a later phase.")),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
         scroll.addView(layout)
         content.addView(scroll, FrameLayout.LayoutParams(-1, -1))
     }
 
-    // ------------------------------------------------------------------ editor
+    /** Pose detail page: the ONLY place a ghost is applied from (spec flow). */
+    private fun showPoseDetail(photo: PosePhoto) {
+        content.removeAllViews()
+        val layout = vertical().apply { setPadding(dp(16), dp(12), dp(16), dp(16)) }
+        val backRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setOnClickListener { poseDetail = null; showPoses() }
+        }
+        val backImg = ImageView(this).apply {
+            setImageResource(R.drawable.ic_back)
+            setColorFilter(Color.WHITE)
+            if (!I18n.isRtl) rotation = 180f
+        }
+        backRow.addView(backImg, LinearLayout.LayoutParams(dp(20), dp(20)))
+        backRow.addView(TextView(this).apply {
+            text = s("بازگشت", "Back")
+            textSize = 15f
+            setTextColor(ink)
+            setPadding(dp(6), 0, dp(6), 0)
+        })
+        layout.addView(backRow)
+        val img = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = GradientDrawable().apply { setColor(panel); cornerRadius = dp(16).toFloat() }
+        }
+        val bmp = decodeAsset(photo.file, 1)
+        if (bmp != null) {
+            val rounded = RoundedBitmapDrawableFactory.create(resources, bmp)
+            rounded.cornerRadius = dp(16).toFloat()
+            rounded.setAntiAlias(true)
+            img.setImageDrawable(rounded)
+        }
+        layout.addView(img, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(12) })
+        layout.addView(TextView(this).apply {
+            text = photo.title()
+            textSize = 17f
+            setTextColor(ink)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(0, dp(14), 0, 0)
+        })
+        layout.addView(TextView(this).apply {
+            text = PoseLibrary.categoryLabel(photo.category)
+            textSize = 12.5f
+            setTextColor(accent)
+            setPadding(0, dp(3), 0, 0)
+        })
+        if (photo.tip().isNotBlank()) {
+            layout.addView(note("💡 " + photo.tip()).apply { setPadding(0, dp(8), 0, 0) })
+        }
+        layout.addView(btnPrimary(s("استفاده در عکس", "Use in photo")) {
+            ghostPoseFile = photo.file
+            ghostPoseTitle = photo.title()
+            poseDetail = null
+            navigate(0)
+            toast(s("ژست روی دوربین آمد", "Pose is on the camera"))
+        }, LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(16) })
+        content.addView(layout, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    // ================================================================== EDITOR
 
     private fun resetEffects() {
         editorPreset = Effects.default
@@ -1099,15 +1286,20 @@ class MainActivity : AppCompatActivity() {
         fxWarmth = 0f
     }
 
+    private fun displayBitmap(): Bitmap? = edPendingBmp ?: edBase
+
+    /** While Adjust/Effects is open the preview uses the pending values; otherwise the committed ones. */
     private fun applyEditorFilter() {
         val img = editorImage ?: return
-        if (editorBitmap == null) {
+        if (displayBitmap() == null) {
             img.colorFilter = null
             return
         }
-        img.colorFilter = ColorMatrixColorFilter(
-            Effects.compose(editorPreset, fxIntensity, fxBrightness, fxContrast, fxSaturation, fxWarmth)
-        )
+        img.colorFilter = if (edTool == 4 || edTool == 5) {
+            ColorMatrixColorFilter(Effects.compose(pendPreset, pendIntensity, pendBrightness, pendContrast, pendSaturation, pendWarmth))
+        } else {
+            ColorMatrixColorFilter(Effects.compose(editorPreset, fxIntensity, fxBrightness, fxContrast, fxSaturation, fxWarmth))
+        }
     }
 
     private fun sliderRow(labelText: String, min: Int, max: Int, value: Int, onChange: (Int) -> Unit): View {
@@ -1121,6 +1313,7 @@ class MainActivity : AppCompatActivity() {
             this.max = max - min
             progress = value - min
         }
+        styleSeek(seek)
         seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) onChange(progress + min)
@@ -1134,83 +1327,440 @@ class MainActivity : AppCompatActivity() {
 
     private fun showEditor() {
         content.removeAllViews()
-        val layout = vertical().apply { setPadding(dp(16), dp(14), dp(16), dp(14)) }
-        layout.addView(title(s("ویرایشگر عکس", "Photo Editor")))
-        layout.addView(btnGhost(s("انتخاب عکس از گالری", "Pick a photo from gallery")) { imagePicker.launch("image/*") },
-            LinearLayout.LayoutParams(-1, dp(48)))
+        edTool = 0
+        edPendingBmp = null
+        toolCells.clear(); fxCells.clear(); cropChips.clear()
+        val layout = vertical()
+        // Header: back · title · Save (accent, only active with a photo).
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(6))
+        }
+        val backImg = ImageView(this).apply {
+            setImageResource(R.drawable.ic_back)
+            setColorFilter(Color.WHITE)
+            if (!I18n.isRtl) rotation = 180f
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            setOnClickListener { navigate(0) }
+        }
+        header.addView(backImg, LinearLayout.LayoutParams(dp(28), dp(28)))
+        header.addView(TextView(this).apply {
+            text = s("ویرایش", "Edit")
+            textSize = 19f
+            setTextColor(ink)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(8), 0, dp(8), 0)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        val save = TextView(this).apply {
+            text = s("ذخیره", "Save")
+            textSize = 15.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(if (edBase != null) accent else faint)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener {
+                if (edBase == null) toast(s("ابتدا عکس انتخاب کنید", "Pick a photo first"))
+                else saveEditedCopy()
+            }
+        }
+        editorSaveBtn = save
+        header.addView(save, LinearLayout.LayoutParams(-2, -2))
+        layout.addView(header)
+
+        if (edBase == null) {
+            // Calm empty state: one soft icon + one button. Nothing else.
+            val empty = vertical().apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(32), 0, dp(32), 0)
+            }
+            val bigIcon = ImageView(this).apply {
+                setImageResource(R.drawable.ic_image)
+                setColorFilter(muted)
+                alpha = 0.55f
+            }
+            val iconWrap = LinearLayout(this).apply { gravity = Gravity.CENTER }
+            iconWrap.addView(bigIcon, LinearLayout.LayoutParams(dp(96), dp(96)))
+            empty.addView(iconWrap)
+            empty.addView(btnPrimary(s("انتخاب عکس", "Choose photo")) { imagePicker.launch("image/*") },
+                LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(22) })
+            layout.addView(empty, LinearLayout.LayoutParams(-1, 0, 1f))
+            content.addView(layout, FrameLayout.LayoutParams(-1, -1))
+            return
+        }
+
+        // Small "change photo" row (the only way to swap the photo being edited).
+        val changeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(dp(16), 0, dp(16), 0)
+        }
+        val changeBtn = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setOnClickListener { imagePicker.launch("image/*") }
+        }
+        val changeImg = ImageView(this).apply { setImageResource(R.drawable.ic_image); setColorFilter(muted) }
+        changeBtn.addView(changeImg, LinearLayout.LayoutParams(dp(17), dp(17)))
+        changeBtn.addView(TextView(this).apply {
+            text = s("تغییر عکس", "Change photo")
+            textSize = 12.5f
+            setTextColor(muted)
+            setPadding(dp(5), 0, dp(5), 0)
+        })
+        changeRow.addView(changeBtn)
+        layout.addView(changeRow)
+
         val img = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
-            setBackgroundColor(panel)
-            setImageBitmap(editorBitmap)
+            setImageBitmap(edBase)
         }
         editorImage = img
-        layout.addView(img, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(12); bottomMargin = dp(12) })
+        layout.addView(img, LinearLayout.LayoutParams(-1, 0, 1f).apply {
+            setMargins(dp(12), dp(8), dp(12), dp(8))
+        })
 
-        val presetRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        for (preset in Effects.presets) {
-            val selected = preset == editorPreset
-            val chipTv = TextView(this).apply {
-                text = preset.name()
-                textSize = 12.5f
-                gravity = Gravity.CENTER
-                setPadding(dp(13), dp(7), dp(13), dp(7))
-                setTextColor(if (selected) Color.BLACK else Color.WHITE)
-                background = GradientDrawable().apply {
-                    setColor(if (selected) Color.WHITE else card)
-                    cornerRadius = dp(16).toFloat()
-                }
-                setOnClickListener {
-                    editorPreset = preset
-                    showEditor()
-                }
+        val panelBox = vertical().apply {
+            background = GradientDrawable().apply {
+                setColor(panel)
+                cornerRadii = floatArrayOf(dp(20).toFloat(), dp(20).toFloat(), dp(20).toFloat(), dp(20).toFloat(), 0f, 0f, 0f, 0f)
             }
-            presetRow.addView(chipTv, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(7) })
+            setPadding(dp(16), dp(10), dp(16), dp(12))
+            visibility = View.GONE
         }
-        layout.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(presetRow)
-        }, LinearLayout.LayoutParams(-1, dp(44)))
+        editorPanelBox = panelBox
+        layout.addView(panelBox, LinearLayout.LayoutParams(-1, -2))
 
-        val sliders = vertical().apply {
-            setBackgroundColor(panel)
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-        }
-        sliders.addView(sliderRow(s("شدت افکت", "Intensity"), 0, 100, (fxIntensity * 100).toInt()) { v -> fxIntensity = v / 100f; applyEditorFilter() })
-        sliders.addView(sliderRow(s("روشنایی", "Brightness"), -60, 60, fxBrightness.toInt()) { v -> fxBrightness = v.toFloat(); applyEditorFilter() })
-        sliders.addView(sliderRow(s("کنتراست", "Contrast"), 50, 150, (fxContrast * 100).toInt()) { v -> fxContrast = v / 100f; applyEditorFilter() })
-        sliders.addView(sliderRow(s("اشباع رنگ", "Saturation"), 0, 200, (fxSaturation * 100).toInt()) { v -> fxSaturation = v / 100f; applyEditorFilter() })
-        sliders.addView(sliderRow(s("گرمای رنگ", "Warmth"), -50, 50, fxWarmth.toInt()) { v -> fxWarmth = v.toFloat(); applyEditorFilter() })
-        layout.addView(ScrollView(this).apply { addView(sliders) }, LinearLayout.LayoutParams(-1, dp(172)))
-
-        val editRow = LinearLayout(this).apply {
+        // Bottom tool bar: icon + tiny label per tool.
+        val toolBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(12), 0, dp(10))
+            setBackgroundColor(panel)
+            setPadding(dp(6), dp(8), dp(6), dp(10))
         }
-        editRow.addView(btnGhost(s("چرخش", "Rotate")) { transformBitmap(rotate = true) }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(8) })
-        editRow.addView(btnGhost(s("برگردان", "Flip")) { transformBitmap(rotate = false) }, LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(8) })
-        editRow.addView(btnGhost(s("بازنشانی", "Reset")) { resetEffects(); showEditor() }, LinearLayout.LayoutParams(0, dp(46), 1f))
-        layout.addView(editRow)
-        layout.addView(btnPrimary(s("ذخیره نسخه ویرایش‌شده", "Save edited copy")) { saveEditedCopy() },
-            LinearLayout.LayoutParams(-1, dp(52)))
-        layout.addView(note(s("فایل اصلی بدون تغییر باقی می‌ماند؛ نسخهٔ تازه جدا ذخیره می‌شود.",
-            "The original file is never changed; the edited copy is saved separately.")))
+        val tools = listOf(
+            Triple(1, R.drawable.ic_crop, s("برش", "Crop")),
+            Triple(2, R.drawable.ic_rotate, s("چرخش", "Rotate")),
+            Triple(3, R.drawable.ic_flip, s("قرینه", "Flip")),
+            Triple(4, R.drawable.ic_adjust, s("تنظیم", "Adjust")),
+            Triple(5, R.drawable.ic_wand, s("افکت‌ها", "Effects"))
+        )
+        for ((toolId, iconRes, labelText) in tools) {
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setOnClickListener { toggleTool(toolId) }
+            }
+            val tImg = ImageView(this).apply { setImageResource(iconRes) }
+            val tLab = TextView(this).apply {
+                text = labelText
+                textSize = 10.5f
+                gravity = Gravity.CENTER
+            }
+            cell.addView(tImg, LinearLayout.LayoutParams(dp(23), dp(23)))
+            cell.addView(tLab, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(3) })
+            toolCells.add(Triple(toolId, tImg, tLab))
+            toolBar.addView(cell, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        layout.addView(toolBar, LinearLayout.LayoutParams(-1, -2))
         content.addView(layout, FrameLayout.LayoutParams(-1, -1))
+        refreshToolBar()
         applyEditorFilter()
     }
 
-    private fun transformBitmap(rotate: Boolean) {
-        val source = editorBitmap ?: return toast(s("ابتدا عکس انتخاب کنید", "Pick a photo first"))
-        val matrix = Matrix()
-        if (rotate) matrix.postRotate(90f) else matrix.postScale(-1f, 1f, source.width / 2f, source.height / 2f)
-        val result = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
-        if (result !== source) {
-            editorBitmap = result
-            editorImage?.setImageBitmap(result)
+    private fun refreshToolBar() {
+        for ((toolId, img, lab) in toolCells) {
+            val active = toolId == edTool
+            img.setColorFilter(if (active) accent else Color.WHITE)
+            lab.setTextColor(if (active) accent else muted)
         }
     }
 
+    private fun toggleTool(toolId: Int) {
+        if (edBase == null) return
+        if (edTool == toolId) {
+            closePanel(commit = false)
+            return
+        }
+        if (edTool != 0) closePanel(commit = false)
+        edTool = toolId
+        when (toolId) {
+            1, 2, 3 -> { edPendingBmp = edBase; cropRatioSel = "free" }
+            4, 5 -> {
+                pendPreset = editorPreset
+                pendIntensity = fxIntensity
+                pendBrightness = fxBrightness
+                pendContrast = fxContrast
+                pendSaturation = fxSaturation
+                pendWarmth = fxWarmth
+            }
+        }
+        buildPanel()
+        refreshToolBar()
+        editorImage?.setImageBitmap(displayBitmap())
+        applyEditorFilter()
+    }
+
+    private fun closePanel(commit: Boolean) {
+        when (edTool) {
+            1, 2, 3 -> {
+                if (commit) edBase = edPendingBmp ?: edBase
+                edPendingBmp = null
+            }
+            4, 5 -> if (commit) {
+                editorPreset = pendPreset
+                fxIntensity = pendIntensity
+                fxBrightness = pendBrightness
+                fxContrast = pendContrast
+                fxSaturation = pendSaturation
+                fxWarmth = pendWarmth
+            }
+        }
+        edTool = 0
+        editorPanelBox?.removeAllViews()
+        editorPanelBox?.visibility = View.GONE
+        editorImage?.setImageBitmap(displayBitmap())
+        editorSaveBtn?.setTextColor(if (edBase != null) accent else faint)
+        refreshToolBar()
+        applyEditorFilter()
+    }
+
+    /** ✓/✕ row shared by every tool panel (Samsung pattern). */
+    private fun confirmRow(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        val cancel = ImageView(this).apply {
+            setImageResource(R.drawable.ic_close)
+            setColorFilter(muted)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnClickListener { closePanel(commit = false) }
+        }
+        row.addView(cancel, LinearLayout.LayoutParams(dp(36), dp(36)))
+        row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        val ok = ImageView(this).apply {
+            setImageResource(R.drawable.ic_check)
+            setColorFilter(accent)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnClickListener { closePanel(commit = true) }
+        }
+        row.addView(ok, LinearLayout.LayoutParams(dp(36), dp(36)))
+        return row
+    }
+
+    private fun panelButton(labelText: String, onClick: () -> Unit): TextView = TextView(this).apply {
+        text = labelText
+        textSize = 13.5f
+        gravity = Gravity.CENTER
+        setTextColor(ink)
+        setPadding(dp(10), dp(10), dp(10), dp(10))
+        background = GradientDrawable().apply { setColor(card); cornerRadius = dp(12).toFloat() }
+        setOnClickListener { onClick() }
+    }
+
+    private fun buildPanel() {
+        val box = editorPanelBox ?: return
+        box.removeAllViews()
+        fxCells.clear(); cropChips.clear()
+        box.addView(confirmRow())
+        when (edTool) {
+            1 -> buildCropPanel(box)
+            2 -> buildRotatePanel(box)
+            3 -> buildFlipPanel(box)
+            4 -> buildAdjustPanel(box)
+            5 -> buildEffectsPanel(box)
+        }
+        box.visibility = View.VISIBLE
+    }
+
+    // ---- geometry ops on the pending bitmap --------------------------------
+
+    private fun geoShow() {
+        editorImage?.setImageBitmap(edPendingBmp)
+    }
+
+    private fun geoRotate(cw: Boolean) {
+        val src = edPendingBmp ?: return
+        val m = Matrix().apply { postRotate(if (cw) 90f else -90f) }
+        edPendingBmp = Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+        geoShow()
+    }
+
+    private fun geoFlip(horizontal: Boolean) {
+        val src = edPendingBmp ?: return
+        val m = Matrix().apply {
+            if (horizontal) postScale(-1f, 1f, src.width / 2f, src.height / 2f)
+            else postScale(1f, -1f, src.width / 2f, src.height / 2f)
+        }
+        edPendingBmp = Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+        geoShow()
+    }
+
+    /** Center-crop to a target width:height ratio. "keep it simple and correct" per spec. */
+    private fun geoCrop(ratioW: Float, ratioH: Float) {
+        val src = edPendingBmp ?: return
+        val target = ratioW / ratioH
+        val current = src.width.toFloat() / src.height
+        if (kotlin.math.abs(current - target) < 0.01f) return
+        edPendingBmp = if (current > target) {
+            val cw = (src.height * target).toInt().coerceIn(1, src.width)
+            Bitmap.createBitmap(src, (src.width - cw) / 2, 0, cw, src.height)
+        } else {
+            val ch = (src.width / target).toInt().coerceIn(1, src.height)
+            Bitmap.createBitmap(src, 0, (src.height - ch) / 2, src.width, ch)
+        }
+        geoShow()
+    }
+
+    private fun refreshCropChips() {
+        for ((key, tv) in cropChips) {
+            val selected = key == cropRatioSel
+            tv.setTextColor(if (selected) bg else ink)
+            tv.background = GradientDrawable().apply {
+                setColor(if (selected) accent else card)
+                cornerRadius = dp(15).toFloat()
+            }
+        }
+    }
+
+    private fun buildCropPanel(box: LinearLayout) {
+        val ratios = listOf(
+            Triple("free", 0f, s("آزاد", "Free")),
+            Triple("1:1", 1f, "1:1"),
+            Triple("4:3", 4f / 3f, "4:3"),
+            Triple("3:4", 3f / 4f, "3:4"),
+            Triple("16:9", 16f / 9f, "16:9"),
+            Triple("9:16", 9f / 16f, "9:16")
+        )
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((key, ratio, labelText) in ratios) {
+            val tv = TextView(this).apply {
+                text = labelText
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(dp(13), dp(6), dp(13), dp(6))
+                setOnClickListener {
+                    cropRatioSel = key
+                    if (ratio > 0f) geoCrop(ratio, 1f)
+                    refreshCropChips()
+                }
+            }
+            cropChips.add(key to tv)
+            row.addView(tv, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(7) })
+        }
+        box.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row)
+        }, LinearLayout.LayoutParams(-1, -2))
+        refreshCropChips()
+        val btns = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        btns.addView(panelButton(s("چرخش ۹۰°", "Rotate 90°")) { geoRotate(cw = true) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
+        btns.addView(panelButton(s("قرینه افقی", "Flip horizontal")) { geoFlip(horizontal = true) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6); marginEnd = dp(6) })
+        btns.addView(panelButton(s("قرینه عمودی", "Flip vertical")) { geoFlip(horizontal = false) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) })
+        box.addView(btns)
+    }
+
+    private fun buildRotatePanel(box: LinearLayout) {
+        val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btns.addView(panelButton(s("۹۰° ساعتگرد", "90° clockwise")) { geoRotate(cw = true) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
+        btns.addView(panelButton(s("۹۰° پادساعتگرد", "90° counter-clockwise")) { geoRotate(cw = false) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) })
+        box.addView(btns)
+    }
+
+    private fun buildFlipPanel(box: LinearLayout) {
+        val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btns.addView(panelButton(s("قرینه افقی", "Flip horizontal")) { geoFlip(horizontal = true) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(6) })
+        btns.addView(panelButton(s("قرینه عمودی", "Flip vertical")) { geoFlip(horizontal = false) },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) })
+        box.addView(btns)
+    }
+
+    private fun buildAdjustPanel(box: LinearLayout) {
+        // Sliders exist ONLY in this panel (plus intensity inside Effects).
+        box.addView(sliderRow(s("روشنایی", "Brightness"), -60, 60, pendBrightness.toInt()) { v -> pendBrightness = v.toFloat(); applyEditorFilter() })
+        box.addView(sliderRow(s("کنتراست", "Contrast"), 50, 150, (pendContrast * 100).toInt()) { v -> pendContrast = v / 100f; applyEditorFilter() })
+        box.addView(sliderRow(s("اشباع رنگ", "Saturation"), 0, 200, (pendSaturation * 100).toInt()) { v -> pendSaturation = v / 100f; applyEditorFilter() })
+        box.addView(sliderRow(s("گرمای رنگ", "Warmth"), -50, 50, pendWarmth.toInt()) { v -> pendWarmth = v.toFloat(); applyEditorFilter() })
+    }
+
+    /** Render one preset onto a small copy of the actual photo (live thumbnail). */
+    private fun renderThumb(src: Bitmap, preset: EffectPreset): Bitmap {
+        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(Effects.compose(preset, 1f, 0f, 1f, 1f, 0f))
+        }
+        canvas.drawBitmap(src, 0f, 0f, paint)
+        return out
+    }
+
+    private fun refreshFxSelection() {
+        for ((preset, cell) in fxCells) {
+            val selected = preset == pendPreset
+            cell.background = GradientDrawable().apply {
+                setColor(Color.TRANSPARENT)
+                cornerRadius = dp(10).toFloat()
+                if (selected) setStroke(dp(2), accent)
+            }
+        }
+    }
+
+    private fun buildEffectsPanel(box: LinearLayout) {
+        val base = edBase ?: return
+        val tw = 168
+        val th = (tw * base.height / base.width).coerceIn(90, 230)
+        val small = Bitmap.createScaledBitmap(base, tw, th, true)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (preset in Effects.presets) {
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(3), dp(3), dp(3), dp(3))
+                setOnClickListener {
+                    pendPreset = preset
+                    refreshFxSelection()
+                    applyEditorFilter()
+                }
+            }
+            val frame = FrameLayout(this).apply { setPadding(dp(2), dp(2), dp(2), dp(2)) }
+            val img = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
+            val thumb = renderThumb(small, preset)
+            val rounded = RoundedBitmapDrawableFactory.create(resources, thumb)
+            rounded.cornerRadius = dp(8).toFloat()
+            rounded.setAntiAlias(true)
+            img.setImageDrawable(rounded)
+            frame.addView(img, FrameLayout.LayoutParams(dp(64), dp(64)))
+            fxCells.add(preset to frame)
+            cell.addView(frame, LinearLayout.LayoutParams(-2, -2))
+            cell.addView(TextView(this).apply {
+                text = preset.name()
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setTextColor(muted)
+                setPadding(0, dp(3), 0, 0)
+            }, LinearLayout.LayoutParams(dp(72), -2))
+            row.addView(cell, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(4) })
+        }
+        box.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row)
+        }, LinearLayout.LayoutParams(-1, -2))
+        refreshFxSelection()
+        box.addView(sliderRow(s("شدت افکت", "Intensity"), 0, 100, (pendIntensity * 100).toInt()) { v -> pendIntensity = v / 100f; applyEditorFilter() },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+    }
+
     private fun saveEditedCopy() {
-        val source = editorBitmap ?: return toast(s("ابتدا عکس انتخاب کنید", "Pick a photo first"))
+        val source = edBase ?: return toast(s("ابتدا عکس انتخاب کنید", "Pick a photo first"))
         val matrix = Effects.compose(editorPreset, fxIntensity, fxBrightness, fxContrast, fxSaturation, fxWarmth)
         cameraExecutor.execute {
             try {
@@ -1239,7 +1789,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ------------------------------------------------------------------ settings & about
+    // ================================================================== SETTINGS & ABOUT
 
     private fun sectionLabel(value: String) = TextView(this).apply {
         text = value
@@ -1259,7 +1809,7 @@ class MainActivity : AppCompatActivity() {
         texts.addView(TextView(this).apply {
             text = titleText
             textSize = 15.5f
-            setTextColor(Color.WHITE)
+            setTextColor(ink)
         })
         if (subText != null) texts.addView(TextView(this).apply {
             text = subText
@@ -1282,7 +1832,6 @@ class MainActivity : AppCompatActivity() {
         layout.addView(sectionLabel(s("عمومی", "General")))
         val langBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(card)
             setPadding(dp(3), dp(3), dp(3), dp(3))
             background = GradientDrawable().apply { setColor(card); cornerRadius = dp(12).toFloat() }
         }
@@ -1293,9 +1842,9 @@ class MainActivity : AppCompatActivity() {
                 textSize = 13f
                 gravity = Gravity.CENTER
                 setPadding(dp(14), dp(6), dp(14), dp(6))
-                setTextColor(if (selected) Color.BLACK else Color.WHITE)
+                setTextColor(if (selected) bg else ink)
                 background = GradientDrawable().apply {
-                    setColor(if (selected) Color.WHITE else Color.TRANSPARENT)
+                    setColor(if (selected) accent else Color.TRANSPARENT)
                     cornerRadius = dp(9).toFloat()
                 }
                 setOnClickListener { if (!selected) setLanguage(lang) }
@@ -1306,6 +1855,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(divider(), LinearLayout.LayoutParams(-1, 1))
         val gridSwitch = Switch(this).apply {
             isChecked = showGrid
+            styleSwitch(this)
             setOnCheckedChangeListener { _, checked ->
                 showGrid = checked
                 prefs.edit().putBoolean("grid_default", checked).apply()
@@ -1323,7 +1873,7 @@ class MainActivity : AppCompatActivity() {
             null
         ))
         layout.addView(sectionLabel(s("برنامه", "App")))
-        layout.addView(settingRow(s("نسخه", "Version"), "0.3.0", null))
+        layout.addView(settingRow(s("نسخه", "Version"), "0.4.0", null))
         layout.addView(divider(), LinearLayout.LayoutParams(-1, 1))
         val aboutEnd = TextView(this).apply {
             text = "›"
@@ -1367,7 +1917,7 @@ class MainActivity : AppCompatActivity() {
         backRow.addView(TextView(this).apply {
             text = s("بازگشت", "Back")
             textSize = 15f
-            setTextColor(Color.WHITE)
+            setTextColor(ink)
             setPadding(dp(6), 0, dp(6), 0)
         })
         layout.addView(backRow)
@@ -1379,11 +1929,11 @@ class MainActivity : AppCompatActivity() {
             text = "Zoom AI Studio"
             textSize = 22f
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+            setTextColor(ink)
             typeface = Typeface.DEFAULT_BOLD
         })
         layout.addView(TextView(this).apply {
-            text = s("نسخه 0.3.0", "Version 0.3.0")
+            text = s("نسخه 0.4.0", "Version 0.4.0")
             textSize = 13f
             gravity = Gravity.CENTER
             setTextColor(muted)
@@ -1393,7 +1943,7 @@ class MainActivity : AppCompatActivity() {
         layout.addView(TextView(this).apply {
             text = "Noorullah Haidari"
             textSize = 17f
-            setTextColor(Color.WHITE)
+            setTextColor(ink)
         })
         layout.addView(TextView(this).apply {
             text = s("توسعه‌دهندهٔ فول‌استک وب و موبایل — کابل، افغانستان", "Full-stack web & mobile developer — Kabul, Afghanistan")
@@ -1472,26 +2022,19 @@ class MainActivity : AppCompatActivity() {
     private fun title(value: String) = TextView(this).apply {
         text = value
         textSize = 21f
-        setTextColor(Color.WHITE)
+        setTextColor(ink)
         typeface = Typeface.DEFAULT_BOLD
         setPadding(0, dp(10), 0, dp(10))
     }
     private fun note(value: String) = label(value, 13f, muted).apply { setLineSpacing(dp(3).toFloat(), 1f) }
+    /** Primary action button: accent fill, dark text (spec palette). */
     private fun btnPrimary(value: String, task: () -> Unit) = TextView(this).apply {
         text = value
         textSize = 15f
         gravity = Gravity.CENTER
-        setTextColor(Color.BLACK)
+        setTextColor(bg)
         typeface = Typeface.DEFAULT_BOLD
-        background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(14).toFloat() }
-        setOnClickListener { task() }
-    }
-    private fun btnGhost(value: String, task: () -> Unit) = TextView(this).apply {
-        text = value
-        textSize = 14f
-        gravity = Gravity.CENTER
-        setTextColor(Color.WHITE)
-        background = GradientDrawable().apply { setColor(card); cornerRadius = dp(12).toFloat() }
+        background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(14).toFloat() }
         setOnClickListener { task() }
     }
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
