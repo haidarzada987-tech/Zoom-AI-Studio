@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.zoomai.studio"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "com.zoomai.studio"
         minSdk = 29
