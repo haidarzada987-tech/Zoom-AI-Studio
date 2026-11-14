@@ -1951,7 +1951,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(muted)
             setPadding(0, dp(3), 0, dp(6))
         })
-        layout.addView(aboutRow(s("وب‌سایت من", "My website"), "noorcode.tech", "https://noorcode.tech"))
+        layout.addView(aboutRow(s("وب‌سایت من", "My website"), "haidarzada987-tech.github.io/noorcode", "https://haidarzada987-tech.github.io/noorcode"))
         layout.addView(divider(), LinearLayout.LayoutParams(-1, 1))
         layout.addView(aboutRow("GitHub", "haidarzada987-tech", "https://github.com/haidarzada987-tech"))
         layout.addView(divider(), LinearLayout.LayoutParams(-1, 1))
